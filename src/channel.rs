@@ -1,21 +1,29 @@
 mod visitor;
 
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use serde_json::{Map, Value};
-use tokio::sync::mpsc;
 use tracing::{metadata::LevelFilter, span::Record, Event, Id, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 use visitor::JsonVisitor;
 
-#[derive(Clone)]
 pub struct EventChannel {
-    sender: mpsc::Sender<String>,
+    pub callback: ThreadsafeFunction<String>,
     level_filter: LevelFilter,
 }
 
+impl Clone for EventChannel {
+    fn clone(&self) -> Self {
+        EventChannel {
+            level_filter: self.level_filter,
+            callback: self.callback.try_clone().unwrap(),
+        }
+    }
+}
+
 impl EventChannel {
-    pub fn new(sender: mpsc::Sender<String>) -> Self {
+    pub fn new(callback: ThreadsafeFunction<String>) -> Self {
         Self {
-            sender,
+            callback,
             level_filter: LevelFilter::OFF,
         }
     }
@@ -81,16 +89,7 @@ where
         let js_object = Value::Object(object);
         let json_str = serde_json::to_string(&js_object).unwrap();
 
-        if let Err(e) = self.sender.try_send(json_str) {
-            match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    eprintln!("Dropped a log message, buffer is full.")
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    eprintln!("Event channel closed while we're still logging.")
-                }
-            }
-        }
+        self.callback.call(Ok(json_str), ThreadsafeFunctionCallMode::Blocking);
     }
 
     fn enabled(&self, metadata: &tracing::Metadata<'_>, ctx: Context<'_, S>) -> bool {

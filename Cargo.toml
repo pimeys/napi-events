@@ -1,24 +1,25 @@
 [package]
-name = "napi-events"
-version = "0.1.0"
 authors = ["Julius de Bruijn <julius+github@nauk.io>"]
 edition = "2018"
+name = "napi-events"
+version = "0.1.0"
 
 [lib]
-crate_type = ["cdylib"]
+crate-type = ["cdylib"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-napi = { version = "1", features = ["napi4", "tokio_rt"] }
-napi-derive = "1"
-tracing = "0.1"
-tracing-subscriber = "0.2"
-tracing-futures = "0.2"
-futures = "0.3"
 anyhow = "1"
+futures = "0.3"
+napi = {git = "https://github.com/napi-rs/napi-rs", branch = "unwrap-from-ref", features = ["napi4", "tokio_rt"]}
+# napi = {path = "../napi-rs/napi", features = ["napi4", "tokio_rt"]}
+napi-derive = "1"
 serde_json = "1"
-tokio = { version = "1", features = ["sync", "macros", "rt-multi-thread"] }
+tokio = {version = "1", features = ["sync", "macros", "rt-multi-thread"]}
+tracing = "0.1"
+tracing-futures = "0.2"
+tracing-subscriber = "0.2"
 
 [build-dependencies]
 napi-build = "1"

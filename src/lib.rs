@@ -1,46 +1,39 @@
 mod channel;
 mod registry;
 
-use std::sync::Arc;
-
 use channel::EventChannel;
-use napi::{CallContext, Env, JsObject, JsString, JsUndefined, Property};
+use napi::{
+    threadsafe_function::{ThreadSafeCallContext, ThreadsafeFunction},
+    CallContext, Env, JsFunction, JsObject, JsString, JsUndefined, Property, Result,
+};
 use napi_derive::{js_function, module_exports};
 use registry::EventRegistry;
-use tokio::sync::{mpsc, Mutex};
 use tracing_futures::WithSubscriber;
 use tracing_subscriber::{
     layer::{Layered, SubscriberExt},
     Registry,
 };
 
-#[derive(Clone)]
 pub struct EventsTest {
-    receiver: Arc<Mutex<mpsc::Receiver<String>>>,
+    js_callback: ThreadsafeFunction<String>,
     subscriber: Layered<EventChannel, EventRegistry>,
 }
 
 impl EventsTest {
-    pub fn new(level: &str) -> Self {
-        let (sender, receiver) = mpsc::channel(10000);
-
-        let mut layer = EventChannel::new(sender);
+    pub fn new(level: &str, tsfn: ThreadsafeFunction<String>) -> napi::Result<Self> {
+        let mut layer = EventChannel::new(tsfn.try_clone()?);
         layer.filter_level(level.parse().unwrap());
 
         let subscriber = EventRegistry::new(Registry::default()).with(layer);
 
-        Self {
-            receiver: Arc::new(Mutex::new(receiver)),
+        Ok(Self {
             subscriber,
-        }
+            js_callback: tsfn,
+        })
     }
 
-    pub async fn do_something(&self) -> usize {
-        self.count().with_subscriber(self.subscriber.clone()).await
-    }
-
-    pub async fn receive_event(&self) -> Option<String> {
-        self.receiver.lock().await.recv().await
+    pub async fn do_something(&self) -> Result<usize> {
+        Ok(self.count().with_subscriber(self.subscriber.clone()).await)
     }
 
     async fn count(&self) -> usize {
@@ -50,12 +43,22 @@ impl EventsTest {
     }
 }
 
-#[js_function(1)]
+#[js_function(2)]
 fn constructor(ctx: CallContext) -> napi::Result<JsUndefined> {
     let level = ctx.get::<JsString>(0)?.into_utf8()?;
 
+    let callback = ctx.get::<JsFunction>(1)?;
+    let tsfn = ctx
+        .env
+        .create_threadsafe_function(&callback, 0, |tsfn_ctx: ThreadSafeCallContext<String>| {
+            tsfn_ctx
+                .env
+                .create_string_from_std(tsfn_ctx.value)
+                .map(|js_string| vec![js_string])
+        })?;
+
     let mut this: JsObject = ctx.this_unchecked();
-    let engine = EventsTest::new(level.as_str()?);
+    let engine = EventsTest::new(level.as_str()?, tsfn)?;
 
     ctx.env.wrap(&mut this, engine)?;
     ctx.env.get_undefined()
@@ -64,28 +67,13 @@ fn constructor(ctx: CallContext) -> napi::Result<JsUndefined> {
 #[js_function(0)]
 fn produce_events(ctx: CallContext) -> napi::Result<JsObject> {
     let this: JsObject = ctx.this_unchecked();
-    let test: &EventsTest = ctx.env.unwrap(&this)?;
-    let test: EventsTest = test.clone();
+    let this_ref = ctx.env.create_reference(this)?;
+    let test = ctx.env.unwrap_from_ref::<EventsTest>(&this_ref)?;
 
-    ctx.env
-        .execute_tokio_future(async move { Ok(test.do_something().await) }, |&mut env, _| {
-            env.get_undefined()
-        })
-}
-
-#[js_function(0)]
-fn receive_event(ctx: CallContext) -> napi::Result<JsObject> {
-    let this: JsObject = ctx.this_unchecked();
-    let test: &EventsTest = ctx.env.unwrap(&this)?;
-    let test: EventsTest = test.clone();
-
-    ctx.env.execute_tokio_future(
-        async move { Ok(test.receive_event().await) },
-        |&mut env, event| match event {
-            Some(ref event) => env.create_string(&event),
-            None => env.get_null().and_then(|null| null.coerce_to_string()),
-        },
-    )
+    ctx.env.execute_tokio_future(test.do_something(), |&mut env, _| {
+        this_ref.unref(env)?;
+        env.get_undefined()
+    })
 }
 
 #[module_exports]
@@ -93,29 +81,10 @@ pub fn init(mut exports: JsObject, env: Env) -> napi::Result<()> {
     let query_engine = env.define_class(
         "EventsTest",
         constructor,
-        &[
-            Property::new(&env, "produce_events")?.with_method(produce_events),
-            Property::new(&env, "receive_event")?.with_method(receive_event),
-        ],
+        &[Property::new(&env, "produce_events")?.with_method(produce_events)],
     )?;
 
     exports.set_named_property("EventsTest", query_engine)?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::EventsTest;
-
-    #[tokio::test]
-    async fn simple_test() {
-        let test = EventsTest::new("debug");
-
-        let answer = test.do_something().await;
-        assert_eq!(3, answer);
-
-        let event = test.receive_event().await;
-        assert_eq!(Some("foo".into()), event);
-    }
 }
