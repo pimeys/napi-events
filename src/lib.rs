@@ -48,7 +48,7 @@ fn constructor(ctx: CallContext) -> napi::Result<JsUndefined> {
     let level = ctx.get::<JsString>(0)?.into_utf8()?;
 
     let callback = ctx.get::<JsFunction>(1)?;
-    let tsfn = ctx
+    let mut tsfn = ctx
         .env
         .create_threadsafe_function(&callback, 0, |tsfn_ctx: ThreadSafeCallContext<String>| {
             tsfn_ctx
@@ -57,6 +57,7 @@ fn constructor(ctx: CallContext) -> napi::Result<JsUndefined> {
                 .map(|js_string| vec![js_string])
         })?;
 
+    tsfn.unref(&ctx.env)?;
     let mut this: JsObject = ctx.this_unchecked();
     let engine = EventsTest::new(level.as_str()?, tsfn)?;
 
